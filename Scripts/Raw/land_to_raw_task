@@ -1,0 +1,27 @@
+create or replace stream cricket.raw.for_match_stream on table cricket.raw.match_raw_table append_only = true; 
+create or replace stream cricket.raw.for_player_stream on table cricket.raw.match_raw_table append_only = true; 
+
+-- create tasks that run every 5 minutes to load data into raw layer
+create or replace task cricket.etl.load_json_to_raw
+        warehouse = 'compute_wh'
+        schedule = '5 minute'
+        as
+        copy into cricket.raw.match_raw_table from 
+(    
+        select 
+            t.$1:meta::variant as meta,
+             t.$1:info::variant as info,
+             t.$1:innings::variant as innings,
+             
+             metadata$filename,
+             metadata$file_row_number, 
+             metadata$file_content_key,
+             metadata$file_last_modified
+        from @cricket.land.my_stage/cricket/json (file_format =>'cricket.land.my_json_format') t
+        )
+    on_error = continue;
+
+
+LIST @cricket.land.my_stage;
+
+select * from cricket.raw.for_match_stream;
