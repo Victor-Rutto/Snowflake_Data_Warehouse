@@ -1,0 +1,155 @@
+
+-- FROM THE RAW TABLE TO THE CLEAN LAYER TABLES
+-- the stream objects (1. cricket.raw.for_match_stream, 2. cricket.raw.for_player_stream) have been created on the cricket.raw.match_raw_table table 
+
+-- create a child task to read & load data into match_details_table.
+create or replace task cricket.etl.load_to_clean_match_details
+        warehouse = 'compute_wh'
+        after cricket.etl.load_json_to_raw ---------------------------- after the data has been loaded to the raw table. 
+        when system$stream_has_data('cricket.raw.for_match_stream')  -- cricket.raw.for_player_stream
+
+        as 
+        insert into cricket.clean.match_details
+    select 
+        HASH(
+        info:season::text,                       
+        info:dates[0]::date,
+        COALESCE(TRY_TO_NUMBER(info:event:match_number::text), 0)
+        
+        ) as match_id,
+    
+        case when info:city::text is not null then info:city::text 
+        else 'N/A'
+        end as city,
+        TRY_TO_NUMBER(info:balls_per_over:: text )       as balls_per_over,
+        info:dates[0]:: date as event_date,
+        date_part('year', info:dates[0]:: date) as event_year,
+        date_part('month', info:dates[0]:: date) as event_month,
+        date_part('day', info:dates[0]:: date) as event_day,
+    
+        info:event:name:: text                       as event_name,
+        COALESCE(TRY_TO_NUMBER(info:event:match_number::text), 0) AS match_number,
+        info:gender::text                     as gender,
+        info:match_type::text                 as match_type,
+    
+        info:officials:match_referees[0]:: text as match_referee,
+        case when info:officials:reserve_umpires[0]:: text is not null then info:officials:reserve_umpires[0]:: text
+                else 'N\A'
+        end as reserve_umpires, 
+        
+        case when info:officials:tv_umpires[0]:: text is not null then info:officials:tv_umpires[0]:: text
+                else 'NA'
+        end as tv_umpires,
+        info:officials:umpires[0]:: text as umpire_1,
+        info:officials:umpires[1]:: text as umpire_2,
+    
+        case when info:outcome:winner::text is not null then   info:outcome:winner::text
+                else 'N/A'
+        end as winner,
+        COALESCE(TRY_TO_NUMBER(info:outcome:by:runs::text), 0) AS runs, 
+        
+        TRY_TO_NUMBER(info:overs::text )         as overs,
+    
+        case when info:player_of_match[0]:: text is not null then info:player_of_match[0]:: text 
+                else 'N/A'
+        end as player_of_the_match,
+        
+    
+        info:season:: text                                 as season, 
+        
+        info:team_type::text                               as team_type,
+        info:teams[0]:: text                                          as team_1,
+        info:teams[1]:: text                                          as team_2,
+        info:toss:decision::text                                            as toss_decision,
+        info:toss:winner::text                                            as toss_winner,
+        info:venue::text                                            as venue, 
+    
+        -- include details about stage from which the data comes for debugging
+        stage_file_name,
+        stage_file_row_number,
+        stage_file_hashkey,
+        stage_modified_ts
+        
+    from cricket.raw.for_match_stream; --------------------------------------------- takes data from the stream 
+
+-- create another child task to read & load data into cricket.clean.innings_table
+create or replace task cricket.etl.load_to_clean_innings_table
+        warehouse = 'compute_wh'
+        after cricket.etl.load_to_clean_match_details ------------------- after the match details table
+        when system$stream_has_data('cricket.raw.for_player_stream')
+
+        as 
+        insert into cricket.clean.innings_table
+        select
+            HASH(
+            date_part('year', info:dates[0]::date),
+            info:event:match_number::int
+            ) as match_id,
+        
+            info:event:match_number:: int as match_number,
+            info:season::text as season,         
+            i.value:team:: text as team_name,
+            o.value:over::int+1 as over,
+            d.value:bowler::text as bowler, 
+            d.value:batter::text as batter, 
+            d.value:non_striker::text as non_striker,
+            d.value:runs.batter::text as runs, 
+            d.value:runs.extras::text as extras,
+            d.value:runs.total::text as total,
+            case when e.key::text is not null then e.key::text
+                else 'n/a'
+            end as extra_type,
+            COALESCE(e.value::number, 0) as extra_runs,
+            f.value:player_out::text as player_out,
+            f.value:kind::text as player_out_kind,
+            f.value:fielders:: variant as player_out_fielders,
+            f.value:fielders[0]:name:: text as multiple_fielder_out,
+            f.value:kind:: text as multiple_fielder_kind,
+            stage_file_name,
+            stage_file_row_number, 
+            stage_file_hashkey,
+            stage_modified_ts
+        from cricket.raw.for_player_stream, ------------------------------------------- Data from the stream object
+        lateral flatten (input=>innings) i,
+        lateral flatten (input=>i.value:overs) o,
+        lateral flatten (input=> o.value:deliveries) d,
+        lateral flatten (input=>d.value:extras, outer => true) e,
+        lateral flatten (input=>d.value:wickets, outer => true) f;
+
+-- create another task to load data into cricket.clean.clean_players_table
+create or replace task cricket.etl.load_to_clean_players_table
+        warehouse = 'compute_wh'
+        after cricket.etl.load_to_clean_innings_table ------------------------------ after the innings table has been populated
+        when system$stream_has_data('cricket.raw.for_player_stream')
+
+        as 
+        insert into cricket.clean.clean_players_table
+        select 
+                HASH(
+                raw.info:season::text,
+                raw.info:dates[0]::text,
+                raw.info:event:match_number::int,
+                p.key::text
+                ) as player_id,
+        
+                
+                raw.info:event:name::text         as competition,
+                raw.info:season::text              as season,
+                raw.info:event:match_number::int  as match_number,
+                raw.info:dates[0]::text           as match_date,
+                p.key::text                       as team_name,
+                team.value::text                  as player_name,
+        
+                -- audit columns
+                raw.stage_file_name,
+                raw.stage_file_row_number,
+                raw.stage_file_hashkey,
+                raw.stage_modified_ts
+    from cricket.raw.for_player_stream,  ----------------------------- from the cricket.raw.for_player_stream
+                lateral flatten(input => raw.info:players) p,
+                lateral flatten(input => p.value) team
+
+    
+
+
+
