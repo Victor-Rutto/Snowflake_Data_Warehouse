@@ -1,0 +1,27 @@
+use role accountadmin;
+use warehouse compute_wh;
+use schema cricket.raw;
+SELECT * FROM cricket.raw.match_raw_table_stream;
+
+drop table cricket.raw.match_raw_table;
+
+-- Create table inside the raw layer
+create or replace transient table cricket.raw.match_raw_table (
+    meta object not null,
+    info variant not null,
+    innings ARRAY not null, 
+    stage_file_name text not null, 
+    stage_file_row_number int not null, 
+    stage_file_hashkey text not null, 
+    stage_modified_ts timestamp not null
+)
+comment = 'Raw table that stores all the json data files with root elements extracted'
+;
+--Conventionally, raw schema holds untransformed staged data.
+-- No Fail-safe retention (less costly than permanent tables)
+--Still protected by Time Travel (default 1 day)
+--Good for raw staging/landing tables where data is temporary and can be reloaded
+
+
+
+
