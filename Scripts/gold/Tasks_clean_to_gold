@@ -1,0 +1,479 @@
+
+create or replace stream cricket.clean.for_match_stream on table cricket.clean.match_details append_only = true; 
+create or replace stream cricket.clean.for_innings_stream on table cricket.clean.innings_table append_only = true; 
+create or replace stream cricket.clean.for_players_stream on table cricket.clean.clean_players_table append_only = true; 
+
+
+use schema cricket.etl;
+use role sysadmin;
+
+create or replace task cricket.etl.etl_load_to_gold_match_dim
+    warehouse = 'compute_wh'
+    after cricket.etl.load_to_clean_match_details
+    when system$stream_has_data('cricket.clean.for_match_stream')
+as
+
+merge into cricket.consumption.match_dim tgt
+using (
+    select
+        match_id,
+        match_number,
+        event_name,
+        gender,
+        match_type,
+        city,
+        venue,
+        team_1,
+        team_2,
+        toss_winner,
+        toss_decision,
+        winner,
+        runs,
+        overs,
+        player_of_the_match,
+        season,
+        event_date,
+        event_year,
+        event_month,
+        event_day,
+        team_type,
+
+        -- metadata for audit
+        stage_file_name,
+        stage_file_row_number,
+        stage_file_hashkey,
+        stage_modified_ts,
+
+        -- stream metadata
+        metadata$action  as action,
+        metadata$isupdate as is_update
+    from cricket.clean.for_match_stream
+) src
+on tgt.match_id = src.match_id
+
+-- 🔄 Update ONLY when the stream row represents an INSERT
+when matched
+     and src.action = 'INSERT' then
+update set
+    tgt.match_number            = src.match_number,
+    tgt.event_name              = src.event_name,
+    tgt.gender                  = src.gender,
+    tgt.match_type              = src.match_type,
+    tgt.city                    = src.city,
+    tgt.venue                   = src.venue,
+    tgt.team_1                  = src.team_1,
+    tgt.team_2                  = src.team_2,
+    tgt.toss_winner             = src.toss_winner,
+    tgt.toss_decision           = src.toss_decision,
+    tgt.winner                  = src.winner,
+    tgt.runs                    = src.runs,
+    tgt.overs                   = src.overs,
+    tgt.player_of_the_match     = src.player_of_the_match,
+    tgt.season                  = src.season,
+    tgt.event_date              = src.event_date,
+    tgt.event_year              = src.event_year,
+    tgt.event_month             = src.event_month,
+    tgt.event_day               = src.event_day,
+    tgt.team_type               = src.team_type,
+    tgt.stage_file_name         = src.stage_file_name,
+    tgt.stage_file_row_number   = src.stage_file_row_number,
+    tgt.stage_file_hashkey      = src.stage_file_hashkey,
+    tgt.stage_modified_ts       = src.stage_modified_ts
+
+-- ➕ Insert new rows (also only INSERT actions)
+when not matched
+     and src.action = 'INSERT' then
+insert (
+    match_id,
+    match_number,
+    event_name,
+    gender,
+    match_type,
+    city,
+    venue,
+    team_1,
+    team_2,
+    toss_winner,
+    toss_decision,
+    winner,
+    runs,
+    overs,
+    player_of_the_match,
+    season,
+    event_date,
+    event_year,
+    event_month,
+    event_day,
+    team_type,
+    stage_file_name,
+    stage_file_row_number,
+    stage_file_hashkey,
+    stage_modified_ts
+)
+values (
+    src.match_id,
+    src.match_number,
+    src.event_name,
+    src.gender,
+    src.match_type,
+    src.city,
+    src.venue,
+    src.team_1,
+    src.team_2,
+    src.toss_winner,
+    src.toss_decision,
+    src.winner,
+    src.runs,
+    src.overs,
+    src.player_of_the_match,
+    src.season,
+    src.event_date,
+    src.event_year,
+    src.event_month,
+    src.event_day,
+    src.team_type,
+    src.stage_file_name,
+    src.stage_file_row_number,
+    src.stage_file_hashkey,
+    src.stage_modified_ts
+);
+
+/*create or replace task cricket.etl.etl_load_to_gold_match_dim
+        warehouse = 'compute_wh'
+        after cricket.etl.load_to_clean_match_details ----------------------after the match details table in the clean  has been populated in 
+        when system$stream_has_data('cricket.clean.for_match_stream')
+
+        as 
+
+        insert into cricket.consumption.match_dim 
+        select
+                match_id,                         -- surrogate key
+                match_number,
+                event_name,
+                gender,
+                match_type,
+                city,
+                venue,
+                team_1,
+                team_2,
+                toss_winner,
+                toss_decision,
+                winner,
+                runs,
+                overs,
+                player_of_the_match,
+                season,
+                event_date,
+                event_year,
+                event_month,
+                event_day,
+                team_type,
+                
+                -- metadata for audit
+                stage_file_name,
+                stage_file_row_number,
+                stage_file_hashkey,
+                stage_modified_ts
+            from cricket.clean.for_match_stream;
+
+*/
+--=======================================================================================================================================================
+
+create or replace task cricket.etl.etl_load_to_player_dim
+    warehouse = 'compute_wh'
+    after cricket.etl.load_to_clean_players_table
+    when system$stream_has_data('cricket.clean.for_players_stream')
+as
+
+merge into cricket.consumption.player_dim tgt
+using (
+    select
+        player_id,
+        competition,
+        season,
+        match_number,
+        match_date,
+        team_name          as player_team,
+        player_name,
+
+        -- audit columns
+        stage_file_name,
+        stage_file_row_number,
+        stage_file_hashkey,
+        stage_modified_ts,
+
+        -- stream metadata
+        metadata$action   as action
+    from cricket.clean.for_players_stream
+) src
+on tgt.player_id = src.player_id
+
+-- 🔄 Update existing players ONLY for INSERT actions
+when matched
+     and src.action = 'INSERT' then
+update set
+    tgt.competition            = src.competition,
+    tgt.season                 = src.season,
+    tgt.match_number           = src.match_number,
+    tgt.match_date             = src.match_date,
+    tgt.player_team            = src.player_team,
+    tgt.player_name            = src.player_name,
+    tgt.stage_file_name        = src.stage_file_name,
+    tgt.stage_file_row_number  = src.stage_file_row_number,
+    tgt.stage_file_hashkey     = src.stage_file_hashkey,
+    tgt.stage_modified_ts      = src.stage_modified_ts
+
+-- ➕ Insert new players
+when not matched
+     and src.action = 'INSERT' then
+insert (
+    player_id,
+    competition,
+    season,
+    match_number,
+    match_date,
+    player_team,
+    player_name,
+    stage_file_name,
+    stage_file_row_number,
+    stage_file_hashkey,
+    stage_modified_ts
+)
+values (
+    src.player_id,
+    src.competition,
+    src.season,
+    src.match_number,
+    src.match_date,
+    src.player_team,
+    src.player_name,
+    src.stage_file_name,
+    src.stage_file_row_number,
+    src.stage_file_hashkey,
+    src.stage_modified_ts
+);
+
+/*create or replace task cricket.etl.etl_load_to_player_dim
+        warehouse = 'compute_wh'
+        after cricket.etl.load_to_clean_players_table ----------------------after the players table in the clean layer has been populated.  
+        when system$stream_has_data('cricket.clean.for_players_stream')
+
+        as 
+        insert into cricket.consumption.player_dim
+
+        select 
+            player_id,                        -- surrogate key
+            competition,
+            season,
+            match_number,
+            match_date,
+            team_name as player_team,
+            player_name,
+            
+            -- audit columns
+            stage_file_name,
+            stage_file_row_number,
+            stage_file_hashkey,
+            stage_modified_ts
+        from cricket.clean.for_players_stream;
+*/
+--====================================================================================================================================================================================
+create or replace task cricket.etl.etl_load_to_deliveries_fact
+    warehouse = 'compute_wh'
+    after cricket.etl.etl_load_to_gold_match_dim,
+          cricket.etl.etl_load_to_player_dim
+    when system$stream_has_data('cricket.clean.for_innings_stream')
+as
+
+merge into cricket.consumption.deliveries_fact tgt
+using (
+    select
+        i.match_id,
+
+        hash(
+            i.match_id,
+            i.team_name,
+            i.over,
+            i.bowler,
+            i.batter,
+            i.non_striker
+        ) as delivery_id,
+
+        -- Foreign keys
+        m.match_id                    as match_key,
+        p_batter.player_id            as batter_id,
+        p_bowler.player_id            as bowler_id,
+        p_nonstriker.player_id        as non_striker_id,
+
+        -- Delivery-level dimensions
+        i.match_number,
+        i.team_name                   as batting_team,
+        i.over,
+
+        -- Stats
+        i.runs::int                   as runs_batter,
+        i.extras::int                 as runs_extras,
+        i.total::int                  as runs_total,
+        i.extra_type,
+        i.extra_runs,
+
+        -- Metadata
+        i.stage_file_name,
+        i.stage_file_row_number,
+        i.stage_file_hashkey,
+        i.stage_modified_ts,
+
+        -- Stream metadata
+        metadata$action               as action
+    from cricket.clean.for_innings_stream i
+
+    left join cricket.consumption.player_dim p_batter
+        on p_batter.player_name = i.batter
+       and p_batter.match_number = i.match_number
+       and p_batter.season = i.season  
+
+    left join cricket.consumption.player_dim p_bowler
+        on p_bowler.player_name = i.bowler
+       and p_bowler.match_number = i.match_number
+       and p_bowler.season = i.season
+
+    left join cricket.consumption.player_dim p_nonstriker
+        on p_nonstriker.player_name = i.non_striker
+       and p_nonstriker.match_number = i.match_number
+       and p_nonstriker.season = i.season
+
+    left join cricket.consumption.match_dim m
+        on m.season = i.season
+       and m.match_number = i.match_number
+) src
+on tgt.delivery_id = src.delivery_id
+
+-- 🔄 Update existing deliveries (INSERT actions only)
+when matched
+     and src.action = 'INSERT' then
+update set
+    tgt.match_key              = src.match_key,
+    tgt.batter_id              = src.batter_id,
+    tgt.bowler_id              = src.bowler_id,
+    tgt.non_striker_id         = src.non_striker_id,
+    tgt.match_number           = src.match_number,
+    tgt.batting_team           = src.batting_team,
+    tgt.over                   = src.over,
+    tgt.runs_batter            = src.runs_batter,
+    tgt.runs_extras            = src.runs_extras,
+    tgt.runs_total             = src.runs_total,
+    tgt.extra_type             = src.extra_type,
+    tgt.extra_runs             = src.extra_runs,
+    tgt.stage_file_name        = src.stage_file_name,
+    tgt.stage_file_row_number  = src.stage_file_row_number,
+    tgt.stage_file_hashkey     = src.stage_file_hashkey,
+    tgt.stage_modified_ts      = src.stage_modified_ts
+
+-- ➕ Insert new deliveries
+when not matched
+     and src.action = 'INSERT' then
+insert (
+    match_id,
+    delivery_id,
+    match_key,
+    batter_id,
+    bowler_id,
+    non_striker_id,
+    match_number,
+    batting_team,
+    over,
+    runs_batter,
+    runs_extras,
+    runs_total,
+    extra_type,
+    extra_runs,
+    stage_file_name,
+    stage_file_row_number,
+    stage_file_hashkey,
+    stage_modified_ts
+)
+values (
+    src.match_id,
+    src.delivery_id,
+    src.match_key,
+    src.batter_id,
+    src.bowler_id,
+    src.non_striker_id,
+    src.match_number,
+    src.batting_team,
+    src.over,
+    src.runs_batter,
+    src.runs_extras,
+    src.runs_total,
+    src.extra_type,
+    src.extra_runs,
+    src.stage_file_name,
+    src.stage_file_row_number,
+    src.stage_file_hashkey,
+    src.stage_modified_ts
+);
+
+/*
+create or replace task cricket.etl.etl_load_to_deliveries_fact
+        warehouse = 'compute_wh'
+        after cricket.etl.etl_load_to_gold_match_dim, cricket.etl.etl_load_to_player_dim -------------after the dimensional tables have been created 
+        when system$stream_has_data('cricket.clean.for_innings_stream')
+
+        as 
+        insert into cricket.consumption.deliveries_fact
+        select 
+            i.match_id,
+            HASH(
+                i.match_id,
+                i.team_name,
+                i.over,
+                i.bowler,
+                i.batter,
+                i.non_striker
+            ) as delivery_id,
+
+                -- Foreign keys
+                m.match_id as match_key,
+                p_batter.player_id   as batter_id,
+                p_bowler.player_id   as bowler_id,
+                p_nonstriker.player_id as non_striker_id,
+            
+                -- Delivery-level dimensions
+                i.match_number,
+                i.team_name as batting_team,
+                i.over,
+                
+                -- Stats
+                i.runs::int          as runs_batter,
+                i.extras::int        as runs_extras,
+                i.total::int         as runs_total,
+                i.extra_type,
+                i.extra_runs,
+            
+                -- Metadata
+                i.stage_file_name,
+                i.stage_file_row_number,
+                i.stage_file_hashkey,
+                i.stage_modified_ts
+            
+            from cricket.clean.for_innings_stream i
+            
+            left join cricket.consumption.player_dim p_batter
+                on p_batter.player_name = i.batter
+                and p_batter.match_number = i.match_number
+                and p_batter.season = i.season  
+            
+            left join cricket.consumption.player_dim p_bowler
+                on p_bowler.player_name = i.bowler
+                and p_bowler.match_number = i.match_number
+                and p_bowler.season = i.season
+            
+            left join cricket.consumption.player_dim p_nonstriker
+                on p_nonstriker.player_name = i.non_striker
+                and p_nonstriker.match_number = i.match_number
+                and p_nonstriker.season = i.season
+                
+            left join cricket.consumption.match_dim m
+                on m.season = i.season
+                and m.match_number = i.match_number;
+*/          
